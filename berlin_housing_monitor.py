@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 import json
 import time
 import hashlib
+import re
 from datetime import datetime
 import os
 from typing import List, Dict, Optional
@@ -151,32 +152,118 @@ def check_degewo() -> List[dict]:
     apartments = []
     
     try:
-        # degewo uses an API endpoint
+        # Try API endpoint first
+        try:
+            response = requests.get(
+                'https://immosuche.degewo.de/de/search/data',
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                    'Accept': 'application/json'
+                },
+                timeout=15
+            )
+            
+            if response.status_code == 200 and response.text.strip():
+                data = response.json()
+                
+                for item in data.get('immos', []):
+                    apartment = {
+                        'company': 'degewo',
+                        'address': f"{item.get('street', '')} {item.get('houseNumber', '')}, {item.get('district', '')}",
+                        'rooms': item.get('rooms'),
+                        'size': item.get('area'),
+                        'warm_rent': item.get('rentTotal'),
+                        'cold_rent': item.get('rentBase'),
+                        'requires_wbs': item.get('wbsRequired', False),
+                        'url': f"https://immosuche.degewo.de/de/search/details/{item.get('id')}",
+                        'available_from': item.get('availableFrom', 'ab sofort')
+                    }
+                    apartments.append(apartment)
+                
+                print(f"  → Found {len(apartments)} apartments via API")
+                return apartments
+        except:
+            pass
+        
+        # Fallback to HTML parsing
         response = requests.get(
-            COMPANIES['degewo']['api_url'],
-            headers={'User-Agent': 'Mozilla/5.0'},
+            'https://www.degewo.de/immosuche',
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
             timeout=15
         )
         
         if response.status_code == 200:
-            data = response.json()
+            soup = BeautifulSoup(response.text, 'html.parser')
             
-            for item in data.get('immos', []):
-                apartment = {
-                    'company': 'degewo',
-                    'address': f"{item.get('street', '')} {item.get('houseNumber', '')}, {item.get('district', '')}",
-                    'rooms': item.get('rooms'),
-                    'size': item.get('area'),
-                    'warm_rent': item.get('rentTotal'),
-                    'cold_rent': item.get('rentBase'),
-                    'requires_wbs': item.get('wbsRequired', False),
-                    'url': f"https://immosuche.degewo.de/de/search/details/{item.get('id')}",
-                    'available_from': item.get('availableFrom', 'ab sofort')
-                }
-                apartments.append(apartment)
+            # Find apartment listings
+            listings = soup.find_all('a', href=lambda x: x and '/immosuche/details/' in x)
+            
+            for listing in listings:
+                try:
+                    # Extract URL
+                    url = listing.get('href', '')
+                    if not url.startswith('http'):
+                        url = f"https://www.degewo.de{url}"
+                    
+                    # Find apartment details in the listing card
+                    parent = listing.find_parent('div')
+                    if not parent:
+                        continue
+                    
+                    # Extract title/address
+                    title_elem = listing.find('h2') or listing.find('h3')
+                    address = title_elem.text.strip() if title_elem else 'N/A'
+                    
+                    # Extract rooms (look for "X Zimmer" pattern)
+                    rooms_text = parent.get_text()
+                    rooms = None
+                    if 'Zimmer' in rooms_text:
+                        rooms_match = re.search(r'(\d+)\s*Zimmer', rooms_text)
+                        if rooms_match:
+                            rooms = float(rooms_match.group(1))
+                    
+                    # Extract size (look for "X m²" pattern)
+                    size = None
+                    if 'm²' in rooms_text:
+                        size_match = re.search(r'(\d+[,.]?\d*)\s*m²', rooms_text)
+                        if size_match:
+                            size = float(size_match.group(1).replace(',', '.'))
+                    
+                    # Extract warm rent (look for "X €" pattern)
+                    warm_rent = None
+                    if 'Warmmiete' in rooms_text or '€' in rooms_text:
+                        # Look for price patterns
+                        price_match = re.search(r'(\d+[,.]?\d*)\s*€', rooms_text)
+                        if price_match:
+                            warm_rent = float(price_match.group(1).replace(',', '.'))
+                    
+                    # Check if WBS required
+                    requires_wbs = 'WBS' in rooms_text or 'Wohnberechtigungsschein' in rooms_text
+                    
+                    apartment = {
+                        'company': 'degewo',
+                        'address': address,
+                        'rooms': rooms,
+                        'size': size,
+                        'warm_rent': warm_rent,
+                        'cold_rent': None,
+                        'requires_wbs': requires_wbs,
+                        'url': url,
+                        'available_from': 'ab sofort'
+                    }
+                    
+                    # Only add if we have at least some data
+                    if rooms or size or warm_rent:
+                        apartments.append(apartment)
+                        
+                except Exception as e:
+                    print(f"  → Error parsing listing: {e}")
+                    continue
+            
+            print(f"  → Found {len(apartments)} apartments via HTML parsing")
                 
     except Exception as e:
-        print(f"Error checking degewo: {e}")
+        print(f"  → Error checking degewo: {e}")
     
     return apartments
 
