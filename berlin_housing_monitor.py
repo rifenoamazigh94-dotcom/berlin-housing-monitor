@@ -68,7 +68,9 @@ COMPANIES = {
 def send_telegram_message(message: str) -> bool:
     """Send a message via Telegram"""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials not configured")
+        print(f"ERROR: Telegram credentials not configured")
+        print(f"  TELEGRAM_BOT_TOKEN present: {bool(TELEGRAM_BOT_TOKEN)}")
+        print(f"  TELEGRAM_CHAT_ID present: {bool(TELEGRAM_CHAT_ID)}")
         return False
     
     try:
@@ -79,10 +81,26 @@ def send_telegram_message(message: str) -> bool:
             'parse_mode': 'HTML',
             'disable_web_page_preview': False
         }
+        
+        print(f"  → Sending to Telegram API...")
+        print(f"  → Chat ID: {TELEGRAM_CHAT_ID}")
+        print(f"  → Bot Token: {TELEGRAM_BOT_TOKEN[:10]}...{TELEGRAM_BOT_TOKEN[-5:]}")
+        
         response = requests.post(url, data=data, timeout=10)
-        return response.status_code == 200
+        
+        print(f"  → Response status: {response.status_code}")
+        
+        if response.status_code == 200:
+            print(f"  → SUCCESS: Message sent!")
+            return True
+        else:
+            print(f"  → FAILED: {response.text}")
+            return False
+            
     except Exception as e:
-        print(f"Error sending Telegram message: {e}")
+        print(f"  → ERROR sending Telegram message: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def load_seen_apartments() -> set:
@@ -316,6 +334,16 @@ def main():
     print(f"\n{'='*60}")
     print(f"Berlin Housing Monitor - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*60}\n")
+    
+    # Verify credentials
+    print("Checking Telegram credentials...")
+    print(f"  TELEGRAM_BOT_TOKEN: {'✅ Set' if TELEGRAM_BOT_TOKEN else '❌ NOT SET'}")
+    print(f"  TELEGRAM_CHAT_ID: {'✅ Set' if TELEGRAM_CHAT_ID else '❌ NOT SET'}")
+    if TELEGRAM_BOT_TOKEN:
+        print(f"  Token starts with: {TELEGRAM_BOT_TOKEN[:15]}...")
+    if TELEGRAM_CHAT_ID:
+        print(f"  Chat ID: {TELEGRAM_CHAT_ID}")
+    print()
     
     # Load previously seen apartments
     seen_apartments = load_seen_apartments()
