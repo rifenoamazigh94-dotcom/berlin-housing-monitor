@@ -33,6 +33,23 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests beautifulsoup4 lxml
     
+    - name: Debug - Check environment variables
+      env:
+        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: |
+        echo "Checking if secrets are loaded..."
+        if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
+          echo "❌ TELEGRAM_BOT_TOKEN is NOT set"
+        else
+          echo "✅ TELEGRAM_BOT_TOKEN is set (length: ${#TELEGRAM_BOT_TOKEN})"
+        fi
+        if [ -z "$TELEGRAM_CHAT_ID" ]; then
+          echo "❌ TELEGRAM_CHAT_ID is NOT set"
+        else
+          echo "✅ TELEGRAM_CHAT_ID is set: $TELEGRAM_CHAT_ID"
+        fi
+    
     - name: Run housing monitor
       env:
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
