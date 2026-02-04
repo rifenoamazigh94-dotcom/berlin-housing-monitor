@@ -164,6 +164,115 @@ def matches_criteria(apartment: dict) -> tuple[bool, str]:
         print(f"Error checking criteria: {e}")
         return False, f"Error al verificar criterios: {e}"
 
+def check_inberlinwohnen() -> List[dict]:
+    """Check inberlinwohnen.de - centralized portal for all 6 companies"""
+    print("Checking inberlinwohnen.de (portal centralizado de las 6 empresas)...")
+    apartments = []
+    
+    try:
+        response = requests.get(
+            'https://www.inberlinwohnen.de/wohnungsfinder/',
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Find apartment listings
+            # The site uses a specific structure for apartment cards
+            listings = soup.find_all('div', class_=lambda x: x and 'apartment' in x.lower() if x else False)
+            
+            if not listings:
+                # Try alternative selectors
+                listings = soup.find_all('article') or soup.find_all('div', class_='offer')
+            
+            print(f"  → Found {len(listings)} potential listings")
+            
+            for listing in listings:
+                try:
+                    # Extract company name
+                    company_elem = listing.find(text=re.compile(r'(degewo|GESOBAU|Gewobag|HOWOGE|STADT UND LAND|WBM)', re.I))
+                    company = 'unknown'
+                    if company_elem:
+                        company_text = str(company_elem).lower()
+                        if 'degewo' in company_text:
+                            company = 'degewo'
+                        elif 'gesobau' in company_text:
+                            company = 'GESOBAU'
+                        elif 'gewobag' in company_text:
+                            company = 'Gewobag'
+                        elif 'howoge' in company_text:
+                            company = 'HOWOGE'
+                        elif 'stadt' in company_text:
+                            company = 'STADT UND LAND'
+                        elif 'wbm' in company_text:
+                            company = 'WBM'
+                    
+                    # Extract URL
+                    link = listing.find('a', href=True)
+                    url = link['href'] if link else ''
+                    if url and not url.startswith('http'):
+                        url = f"https://www.inberlinwohnen.de{url}"
+                    
+                    # Extract text content
+                    text = listing.get_text()
+                    
+                    # Extract address
+                    address = 'N/A'
+                    address_match = re.search(r'([A-ZÄÖÜ][a-zäöüß]+(?:[-\s][A-ZÄÖÜa-zäöüß]+)*(?:straße|str\.|platz|weg|allee))\s*\d*', text, re.I)
+                    if address_match:
+                        address = address_match.group(0)
+                    
+                    # Extract rooms
+                    rooms = None
+                    rooms_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*(?:Zimmer|Zi\.)', text)
+                    if rooms_match:
+                        rooms = float(rooms_match.group(1).replace(',', '.'))
+                    
+                    # Extract size
+                    size = None
+                    size_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*m[²2]', text)
+                    if size_match:
+                        size = float(size_match.group(1).replace(',', '.'))
+                    
+                    # Extract warm rent
+                    warm_rent = None
+                    # Look for patterns like "600,00 €" or "600 EUR"
+                    price_match = re.search(r'(\d{1,4}[,\.]?\d{0,2})\s*(?:€|EUR|Euro)', text)
+                    if price_match:
+                        warm_rent = float(price_match.group(1).replace(',', '.').replace('.', '', text.count('.') - 1))
+                    
+                    # Check WBS requirement
+                    requires_wbs = bool(re.search(r'WBS|Wohnberechtigungsschein', text, re.I))
+                    
+                    apartment = {
+                        'company': company,
+                        'address': address,
+                        'rooms': rooms,
+                        'size': size,
+                        'warm_rent': warm_rent,
+                        'cold_rent': None,
+                        'requires_wbs': requires_wbs,
+                        'url': url,
+                        'available_from': 'ab sofort'
+                    }
+                    
+                    # Only add if we extracted some meaningful data
+                    if url and (rooms or size or warm_rent):
+                        apartments.append(apartment)
+                        
+                except Exception as e:
+                    print(f"  → Error parsing listing: {e}")
+                    continue
+            
+            print(f"  → Extracted {len(apartments)} apartments with data")
+                
+    except Exception as e:
+        print(f"  → Error checking inberlinwohnen: {e}")
+    
+    return apartments
+
 def check_degewo() -> List[dict]:
     """Check degewo for new apartments"""
     print("Checking degewo...")
@@ -352,12 +461,22 @@ def main():
     # Check each company
     all_apartments = []
     
-    # Check degewo (has working implementation)
+    # OPTION 1: Check centralized portal (all 6 companies at once)
+    print("="*60)
+    print("Revisando portal centralizado (todas las empresas)...")
+    print("="*60)
+    all_apartments.extend(check_inberlinwohnen())
+    
+    # OPTION 2: Also check degewo directly as backup
+    print("\n" + "="*60)
+    print("Revisando degewo directamente (backup)...")
+    print("="*60)
     all_apartments.extend(check_degewo())
     
-    # Check other companies (need implementation)
-    for company_key in ['gesobau', 'gewobag', 'howoge', 'stadt_und_land', 'wbm']:
-        all_apartments.extend(check_generic_company(company_key))
+    # Note: Other companies are already included in inberlinwohnen
+    # Uncomment below if you want individual checks too:
+    # for company_key in ['gesobau', 'gewobag', 'howoge', 'stadt_und_land', 'wbm']:
+    #     all_apartments.extend(check_generic_company(company_key))
     
     # Process apartments
     for apartment in all_apartments:
