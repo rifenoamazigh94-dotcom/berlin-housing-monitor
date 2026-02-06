@@ -273,6 +273,109 @@ def check_inberlinwohnen() -> List[dict]:
     
     return apartments
 
+def fetch_degewo_apartment_details(url: str) -> dict:
+    """Fetch detailed information from individual degewo apartment page"""
+    try:
+        response = requests.get(
+            url,
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+            timeout=15
+        )
+        
+        if response.status_code != 200:
+            return {}
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        details = {}
+        
+        # Extract from Objektdetails section
+        objektdetails = soup.find('h2', string='Objektdetails')
+        if objektdetails:
+            table = objektdetails.find_next('table')
+            if table:
+                rows = table.find_all('tr')
+                for row in rows:
+                    cols = row.find_all('td')
+                    if len(cols) == 2:
+                        key = cols[0].get_text().strip()
+                        value = cols[1].get_text().strip()
+                        
+                        if 'Zimmer' in key:
+                            try:
+                                details['rooms'] = float(value.replace(',', '.'))
+                            except:
+                                pass
+                        elif 'Wohnfläche' in key:
+                            try:
+                                size_match = re.search(r'(\d+[,\.]?\d*)', value)
+                                if size_match:
+                                    details['size'] = float(size_match.group(1).replace(',', '.'))
+                            except:
+                                pass
+                        elif 'WBS benötigt' in key:
+                            details['requires_wbs'] = 'Ja' in value or 'ja' in value
+                        elif 'Verfügbar ab' in key:
+                            details['available_from'] = value
+        
+        # Extract address
+        address_elem = soup.find('h1')
+        if address_elem:
+            # Address is usually in a separate element near the h1
+            address_container = soup.find(string=re.compile(r'\d{5}\s+Berlin'))
+            if address_container:
+                # Get the street address that appears before the postal code
+                street_elem = address_container.find_parent().find_previous('div')
+                if street_elem:
+                    street = street_elem.get_text().strip()
+                    postal_match = re.search(r'(\d{5}\s+Berlin)', address_container)
+                    if postal_match:
+                        details['address'] = f"{street}, {postal_match.group(1)}"
+        
+        # If address not found, try alternative method
+        if 'address' not in details:
+            # Look for address near map section
+            addr_parts = []
+            for text in soup.stripped_strings:
+                if re.match(r'^[A-ZÄÖÜ][\wäöüß\-]+(?:straße|str\.|platz|weg|allee)', text, re.I):
+                    addr_parts.append(text)
+                    break
+            for text in soup.stripped_strings:
+                if re.match(r'^\d{5}\s+Berlin', text):
+                    addr_parts.append(text)
+                    break
+            if addr_parts:
+                details['address'] = ', '.join(addr_parts)
+        
+        # Extract prices from the cost section at top
+        # Look for "Nettokaltmiete" and "Gesamt"
+        nettokalt_elem = soup.find(string=re.compile(r'Nettokaltmiete', re.I))
+        if nettokalt_elem:
+            price_container = nettokalt_elem.find_parent()
+            if price_container:
+                price_text = price_container.get_text()
+                cold_match = re.search(r'(\d+[,\.]\d+)\s*€', price_text)
+                if cold_match:
+                    details['cold_rent'] = float(cold_match.group(1).replace(',', '.').replace('.', '', price_text.count('.') - 1))
+        
+        gesamt_elem = soup.find(string=re.compile(r'Gesamt\s*$', re.I))
+        if not gesamt_elem:
+            # Try finding it in a different way
+            for elem in soup.find_all(['div', 'span', 'p']):
+                text = elem.get_text().strip()
+                if text == 'Gesamt' or 'Gesamt' in text:
+                    # Look for price near this element
+                    price_text = elem.find_next().get_text() if elem.find_next() else ''
+                    warm_match = re.search(r'(\d+[,\.]\d+)\s*€', price_text)
+                    if warm_match:
+                        details['warm_rent'] = float(warm_match.group(1).replace(',', '.').replace('.', '', price_text.count('.') - 1))
+                        break
+        
+        return details
+        
+    except Exception as e:
+        print(f"    → Error fetching details: {e}")
+        return {}
+
 def check_degewo() -> List[dict]:
     """Check degewo for new apartments"""
     print("Checking degewo...")
@@ -332,43 +435,109 @@ def check_degewo() -> List[dict]:
                     if not url.startswith('http'):
                         url = f"https://www.degewo.de{url}"
                     
-                    # Find apartment details in the listing card
-                    parent = listing.find_parent('div')
-                    if not parent:
-                        continue
+                    # Fetch detailed information from the individual apartment page
+                    print(f"    → Fetching details from {url[:60]}...")
+                    detailed_info = fetch_degewo_apartment_details(url)
                     
-                    # Extract title/address
+                    # Extract title from listing (as fallback for address)
                     title_elem = listing.find('h2') or listing.find('h3')
-                    address = title_elem.text.strip() if title_elem else 'N/A'
-                    
-                    # Extract rooms (look for "X Zimmer" pattern)
-                    rooms_text = parent.get_text()
-                    rooms = None
-                    if 'Zimmer' in rooms_text:
-                        rooms_match = re.search(r'(\d+)\s*Zimmer', rooms_text)
-                        if rooms_match:
-                            rooms = float(rooms_match.group(1))
-                    
-                    # Extract size (look for "X m²" pattern)
-                    size = None
-                    if 'm²' in rooms_text:
-                        size_match = re.search(r'(\d+[,.]?\d*)\s*m²', rooms_text)
-                        if size_match:
-                            size = float(size_match.group(1).replace(',', '.'))
-                    
-                    # Extract warm rent (look for "X €" pattern)
-                    warm_rent = None
-                    if 'Warmmiete' in rooms_text or '€' in rooms_text:
-                        # Look for price patterns
-                        price_match = re.search(r'(\d+[,.]?\d*)\s*€', rooms_text)
-                        if price_match:
-                            warm_rent = float(price_match.group(1).replace(',', '.'))
-                    
-                    # Check if WBS required
-                    requires_wbs = 'WBS' in rooms_text or 'Wohnberechtigungsschein' in rooms_text
+                    title = title_elem.text.strip() if title_elem else 'N/A'
                     
                     apartment = {
                         'company': 'degewo',
+                        'address': detailed_info.get('address', title),
+                        'rooms': detailed_info.get('rooms'),
+                        'size': detailed_info.get('size'),
+                        'warm_rent': detailed_info.get('warm_rent'),
+                        'cold_rent': detailed_info.get('cold_rent'),
+                        'requires_wbs': detailed_info.get('requires_wbs', False),
+                        'url': url,
+                        'available_from': detailed_info.get('available_from', 'ab sofort')
+                    }
+                    
+                    # Only add if we extracted meaningful data
+                    if apartment['rooms'] or apartment['size'] or apartment['warm_rent']:
+                        apartments.append(apartment)
+                        print(f"    → ✓ Extracted: {apartment['rooms']} Zi, {apartment['size']}m², {apartment['warm_rent']}€")
+                    else:
+                        print(f"    → ✗ Could not extract complete data")
+                        
+                except Exception as e:
+                    print(f"  → Error parsing listing: {e}")
+                    continue
+            
+            print(f"  → Found {len(apartments)} apartments via HTML parsing")
+                
+    except Exception as e:
+        print(f"  → Error checking degewo: {e}")
+    
+    return apartments
+
+def check_howoge() -> List[dict]:
+    """Check HOWOGE for new apartments"""
+    print("Checking HOWOGE...")
+    apartments = []
+    
+    try:
+        # HOWOGE uses JavaScript, so we'll try to detect any apartment listings
+        response = requests.get(
+            'https://www.howoge.de/immobiliensuche/wohnungssuche.html',
+            headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'},
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            soup = BeautifulSoup(response.text, 'html.parser')
+            
+            # Look for apartment detail links
+            links = soup.find_all('a', href=lambda x: x and '/wohnungssuche/detail/' in x if x else False)
+            
+            print(f"  → Found {len(links)} apartment links")
+            
+            for link in links:
+                try:
+                    url = link.get('href', '')
+                    if not url.startswith('http'):
+                        url = f"https://www.howoge.de{url}"
+                    
+                    # Extract apartment ID from URL
+                    apt_id_match = re.search(r'/detail/(\d+-\d+-\d+)', url)
+                    if not apt_id_match:
+                        continue
+                    
+                    # Get the parent container
+                    parent = link.find_parent(['div', 'article', 'li'])
+                    if not parent:
+                        parent = link
+                    
+                    text = parent.get_text()
+                    
+                    # Extract address
+                    address = link.get_text().strip() if link.get_text() else 'N/A'
+                    
+                    # Extract rooms
+                    rooms = None
+                    rooms_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*(?:Zimmer|Zi\.)', text)
+                    if rooms_match:
+                        rooms = float(rooms_match.group(1).replace(',', '.'))
+                    
+                    # Extract size
+                    size = None
+                    size_match = re.search(r'(\d+(?:[,\.]\d+)?)\s*m[²2]', text)
+                    if size_match:
+                        size = float(size_match.group(1).replace(',', '.'))
+                    
+                    # Extract warm rent
+                    warm_rent = None
+                    price_match = re.search(r'(\d{1,4}[,\.]?\d{0,2})\s*(?:€|EUR)', text)
+                    if price_match:
+                        warm_rent = float(price_match.group(1).replace(',', '.').replace('.', '', text.count('.') - 1))
+                    
+                    # Check WBS
+                    requires_wbs = bool(re.search(r'WBS|Wohnberechtigungsschein', text, re.I))
+                    
+                    apartment = {
+                        'company': 'HOWOGE',
                         'address': address,
                         'rooms': rooms,
                         'size': size,
@@ -379,18 +548,21 @@ def check_degewo() -> List[dict]:
                         'available_from': 'ab sofort'
                     }
                     
-                    # Only add if we have at least some data
-                    if rooms or size or warm_rent:
-                        apartments.append(apartment)
+                    apartments.append(apartment)
                         
                 except Exception as e:
-                    print(f"  → Error parsing listing: {e}")
+                    print(f"  → Error parsing HOWOGE listing: {e}")
                     continue
             
-            print(f"  → Found {len(apartments)} apartments via HTML parsing")
+            print(f"  → Extracted {len(apartments)} apartments")
+            
+            # If no apartments found via HTML, create a generic notification
+            if len(apartments) == 0 and len(links) == 0:
+                print("  → HOWOGE usa JavaScript - no se pueden extraer detalles")
+                print("  → Revisa manualmente: https://www.howoge.de/immobiliensuche/wohnungssuche.html")
                 
     except Exception as e:
-        print(f"  → Error checking degewo: {e}")
+        print(f"  → Error checking HOWOGE: {e}")
     
     return apartments
 
@@ -467,16 +639,20 @@ def main():
     print("="*60)
     all_apartments.extend(check_inberlinwohnen())
     
-    # OPTION 2: Also check degewo directly as backup
+    # OPTION 2: Check degewo directly
     print("\n" + "="*60)
-    print("Revisando degewo directamente (backup)...")
+    print("Revisando degewo directamente...")
     print("="*60)
     all_apartments.extend(check_degewo())
     
-    # Note: Other companies are already included in inberlinwohnen
-    # Uncomment below if you want individual checks too:
-    # for company_key in ['gesobau', 'gewobag', 'howoge', 'stadt_und_land', 'wbm']:
-    #     all_apartments.extend(check_generic_company(company_key))
+    # OPTION 3: Check HOWOGE directly
+    print("\n" + "="*60)
+    print("Revisando HOWOGE directamente...")
+    print("="*60)
+    all_apartments.extend(check_howoge())
+    
+    # Note: Other companies (GESOBAU, Gewobag, STADT UND LAND, WBM) use complex systems
+    # They are included in inberlinwohnen or require more advanced scraping
     
     # Process apartments
     for apartment in all_apartments:
