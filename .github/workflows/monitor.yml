@@ -20,7 +20,7 @@ jobs:
     - name: Checkout repository
       uses: actions/checkout@v4
       with:
-        persist-credentials: false
+        token: ${{ secrets.GITHUB_TOKEN }}
         fetch-depth: 0
     
     - name: Set up Python
@@ -62,5 +62,9 @@ jobs:
         git config --local user.email "github-actions[bot]@users.noreply.github.com"
         git config --local user.name "github-actions[bot]"
         git add seen_apartments.json || true
-        git diff --quiet && git diff --staged --quiet || git commit -m "Update seen apartments - $(date +'%Y-%m-%d %H:%M:%S')"
-        git push https://${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main || true
+        if ! git diff --quiet --staged; then
+          git commit -m "Update seen apartments - $(date +'%Y-%m-%d %H:%M:%S')"
+          git push || echo "Push failed but continuing..."
+        else
+          echo "No changes to commit"
+        fi
