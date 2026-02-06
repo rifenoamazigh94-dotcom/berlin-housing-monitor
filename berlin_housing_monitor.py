@@ -347,28 +347,46 @@ def fetch_degewo_apartment_details(url: str) -> dict:
                 details['address'] = ', '.join(addr_parts)
         
         # Extract prices from the cost section at top
-        # Look for "Nettokaltmiete" and "Gesamt"
-        nettokalt_elem = soup.find(string=re.compile(r'Nettokaltmiete', re.I))
-        if nettokalt_elem:
-            price_container = nettokalt_elem.find_parent()
-            if price_container:
-                price_text = price_container.get_text()
-                cold_match = re.search(r'(\d+[,\.]\d+)\s*€', price_text)
-                if cold_match:
-                    details['cold_rent'] = float(cold_match.group(1).replace(',', '.').replace('.', '', price_text.count('.') - 1))
+        # Look for the price box with "Gesamt"
+        price_elements = soup.find_all(string=re.compile(r'\d+[,\.]\d+\s*€'))
         
-        gesamt_elem = soup.find(string=re.compile(r'Gesamt\s*$', re.I))
-        if not gesamt_elem:
-            # Try finding it in a different way
-            for elem in soup.find_all(['div', 'span', 'p']):
-                text = elem.get_text().strip()
-                if text == 'Gesamt' or 'Gesamt' in text:
-                    # Look for price near this element
-                    price_text = elem.find_next().get_text() if elem.find_next() else ''
-                    warm_match = re.search(r'(\d+[,\.]\d+)\s*€', price_text)
-                    if warm_match:
-                        details['warm_rent'] = float(warm_match.group(1).replace(',', '.').replace('.', '', price_text.count('.') - 1))
+        # The warm rent (Gesamt) is usually the largest number displayed prominently
+        for elem in price_elements:
+            parent = elem.find_parent()
+            if parent:
+                # Check if this is near "Gesamt" text
+                parent_text = parent.get_text()
+                if 'Gesamt' in parent_text or 'gesamt' in parent_text.lower():
+                    price_match = re.search(r'(\d+[,\.]\d+)\s*€', elem)
+                    if price_match:
+                        price_str = price_match.group(1).replace('.', '').replace(',', '.')
+                        details['warm_rent'] = float(price_str)
                         break
+        
+        # If still not found, look for warm rent in a different way
+        if 'warm_rent' not in details:
+            # Find the section with costs
+            for text_node in soup.find_all(string=re.compile(r'Gesamt')):
+                # Get the next element that might contain the price
+                next_elem = text_node.find_next()
+                if next_elem:
+                    text = next_elem.get_text()
+                    price_match = re.search(r'(\d+[,\.]\d+)\s*€', text)
+                    if price_match:
+                        price_str = price_match.group(1).replace('.', '').replace(',', '.')
+                        details['warm_rent'] = float(price_str)
+                        break
+        
+        # Extract cold rent
+        for text_node in soup.find_all(string=re.compile(r'Nettokaltmiete')):
+            next_elem = text_node.find_next()
+            if next_elem:
+                text = next_elem.get_text()
+                price_match = re.search(r'(\d+[,\.]\d+)\s*€', text)
+                if price_match:
+                    price_str = price_match.group(1).replace('.', '').replace(',', '.')
+                    details['cold_rent'] = float(price_str)
+                    break
         
         return details
         
@@ -593,21 +611,25 @@ def format_apartment_message(apartment: dict, reason: str) -> str:
     """Format apartment data as Telegram message"""
     wbs_status = "✅ Con WBS" if apartment.get('requires_wbs') else "❌ Sin WBS"
     
-    message = f"""
-🏠 <b>Nueva Oferta - {apartment['company']}</b>
+    # Get clean address (max 80 chars)
+    address = apartment.get('address', 'N/A')
+    if len(address) > 80:
+        address = address[:77] + '...'
+    
+    message = f"""🏠 <b>Nueva Oferta - {apartment['company']}</b>
 
-📍 <b>Dirección:</b> {apartment.get('address', 'N/A')}
+📍 <b>Dirección:</b> {address}
 🚪 <b>Habitaciones:</b> {apartment.get('rooms', 'N/A')}
 📏 <b>Tamaño:</b> {apartment.get('size', 'N/A')} m²
-💰 <b>Alquiler cálido:</b> {apartment.get('warm_rent', 'N/A')} €
-💵 <b>Alquiler frío:</b> {apartment.get('cold_rent', 'N/A')} €
+💰 <b>Alquiler warm:</b> {apartment.get('warm_rent', 'N/A')} €
+💵 <b>Alquiler kalt:</b> {apartment.get('cold_rent', 'N/A')} €
 📋 <b>WBS:</b> {wbs_status}
 📅 <b>Disponible:</b> {apartment.get('available_from', 'N/A')}
 
 ✨ <b>Estado:</b> {reason}
 
-🔗 <a href="{apartment.get('url', '#')}">Ver oferta completa</a>
-"""
+🔗 <a href="{apartment.get('url', '#')}">Ver oferta completa</a>"""
+    
     return message.strip()
 
 def main():
@@ -633,26 +655,22 @@ def main():
     # Check each company
     all_apartments = []
     
-    # OPTION 1: Check centralized portal (all 6 companies at once)
+    # Check centralized portal (limited functionality due to JavaScript)
     print("="*60)
-    print("Revisando portal centralizado (todas las empresas)...")
+    print("Revisando portal centralizado...")
     print("="*60)
     all_apartments.extend(check_inberlinwohnen())
     
-    # OPTION 2: Check degewo directly
+    # Check degewo directly (main source)
     print("\n" + "="*60)
     print("Revisando degewo directamente...")
     print("="*60)
     all_apartments.extend(check_degewo())
     
-    # OPTION 3: Check HOWOGE directly
-    print("\n" + "="*60)
-    print("Revisando HOWOGE directamente...")
-    print("="*60)
-    all_apartments.extend(check_howoge())
-    
-    # Note: Other companies (GESOBAU, Gewobag, STADT UND LAND, WBM) use complex systems
-    # They are included in inberlinwohnen or require more advanced scraping
+    # Note: HOWOGE, GESOBAU, Gewobag, STADT UND LAND, WBM use JavaScript
+    # and cannot be scraped reliably. Recommend checking manually:
+    # - HOWOGE: https://www.howoge.de/immobiliensuche/wohnungssuche.html
+    # - Others: check their respective websites
     
     # Process apartments
     for apartment in all_apartments:
